@@ -255,8 +255,8 @@ app.post('/proxy', async (req, res) => {
       const elapsed = Date.now() - startTime
       const responseBody = Buffer.concat(chunks).toString('utf8')
 
-      // Do not log request/response bodies (only method + hostname + path prefix for debugging)
-      console.log(`[proxy] ${upperMethod} ${parsed.hostname} -> ${proxyRes.statusCode} (${elapsed}ms)`)
+      // Do not log request/response bodies or target URLs (security)
+      console.log(`[proxy] ${upperMethod} -> ${proxyRes.statusCode} (${elapsed}ms)`)
 
       res.json({
         status: proxyRes.statusCode,

@@ -16,41 +16,44 @@ const FLAGS_WITH_VALUE = new Set([
   '-X', '--request', '-H', '--header', '-d', '--data', '--data-raw',
   '--data-binary', '--data-urlencode', '-u', '--user', '-A', '--user-agent',
   '-e', '--referer', '-o', '--output', '--connect-timeout', '--max-time',
-  '--cert', '--key', '--cacert', '--proxy', '-F', '--form',
+  '--cert', '--key', '--cacert', '--proxy', '-F', '--form', '--url',
 ])
 
+let _rowId = 0
+const newRow = (overrides = {}) => ({ id: ++_rowId, key: '', value: '', enabled: true, ...overrides })
+
 function KeyValueEditor({ items, onChange, placeholder = 'Key' }) {
-  const addRow = () => onChange([...items, { key: '', value: '', enabled: true }])
-  const removeRow = (i) => onChange(items.filter((_, idx) => idx !== i))
-  const updateRow = (i, field, val) => {
-    const updated = items.map((item, idx) => idx === i ? { ...item, [field]: val } : item)
+  const addRow = () => onChange([...items, newRow()])
+  const removeRow = (id) => onChange(items.filter(item => item.id !== id))
+  const updateRow = (id, field, val) => {
+    const updated = items.map(item => item.id === id ? { ...item, [field]: val } : item)
     onChange(updated)
   }
 
   return (
     <div className="space-y-2">
-      {items.map((item, i) => (
-        <div key={i} className="flex gap-2 items-center">
+      {items.map((item) => (
+        <div key={item.id} className="flex gap-2 items-center">
           <input
             type="checkbox"
             checked={item.enabled}
-            onChange={(e) => updateRow(i, 'enabled', e.target.checked)}
+            onChange={(e) => updateRow(item.id, 'enabled', e.target.checked)}
             className="w-4 h-4 rounded accent-blue-500 cursor-pointer"
           />
           <input
             value={item.key}
-            onChange={(e) => updateRow(i, 'key', e.target.value)}
+            onChange={(e) => updateRow(item.id, 'key', e.target.value)}
             placeholder={placeholder}
             className="flex-1 px-3 py-1.5 rounded border text-sm bg-inherit border-current/20 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <input
             value={item.value}
-            onChange={(e) => updateRow(i, 'value', e.target.value)}
+            onChange={(e) => updateRow(item.id, 'value', e.target.value)}
             placeholder="Value"
             className="flex-1 px-3 py-1.5 rounded border text-sm bg-inherit border-current/20 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <button
-            onClick={() => removeRow(i)}
+            onClick={() => removeRow(item.id)}
             className="px-2 py-1 text-red-400 hover:text-red-300 text-lg leading-none"
             title="Remove"
           >×</button>
@@ -81,25 +84,25 @@ function JsonViewer({ data }) {
       if (val.length === 0) return <span className="text-gray-300">[]</span>
       const isCollapsed = collapsed[path]
       return (
-        <span>
-          <button onClick={() => toggle(path)} className="text-gray-400 hover:text-white">
+        <div className="inline">
+          <button onClick={() => toggle(path)} className="text-gray-400 hover:text-white mr-1">
             {isCollapsed ? '▶' : '▼'}
           </button>
-          {' ['}
+          <span className="text-gray-300">{'['}</span>
           {isCollapsed
-            ? <span className="text-gray-400 cursor-pointer" onClick={() => toggle(path)}>{val.length} items</span>
+            ? <button onClick={() => toggle(path)} className="text-gray-400 mx-1 hover:text-white">{val.length} items</button>
             : (
               <div className="ml-4">
                 {val.map((item, i) => (
-                  <div key={i}>
+                  <div key={i} className="font-mono">
                     {renderValue(item, `${path}[${i}]`, depth + 1)}
-                    {i < val.length - 1 && ','}
+                    {i < val.length - 1 && <span className="text-gray-500">,</span>}
                   </div>
                 ))}
               </div>
             )}
-          {']'}
-        </span>
+          <span className="text-gray-300">{']'}</span>
+        </div>
       )
     }
 
@@ -108,27 +111,27 @@ function JsonViewer({ data }) {
       if (keys.length === 0) return <span className="text-gray-300">{'{}'}</span>
       const isCollapsed = collapsed[path]
       return (
-        <span>
-          <button onClick={() => toggle(path)} className="text-gray-400 hover:text-white">
+        <div className="inline">
+          <button onClick={() => toggle(path)} className="text-gray-400 hover:text-white mr-1">
             {isCollapsed ? '▶' : '▼'}
           </button>
-          {' {'}
+          <span className="text-gray-300">{'{'}</span>
           {isCollapsed
-            ? <span className="text-gray-400 cursor-pointer" onClick={() => toggle(path)}>{keys.length} keys</span>
+            ? <button onClick={() => toggle(path)} className="text-gray-400 mx-1 hover:text-white">{keys.length} keys</button>
             : (
               <div className="ml-4">
                 {keys.map((k, i) => (
-                  <div key={k}>
+                  <div key={k} className="font-mono">
                     <span className="text-purple-400">"{k}"</span>
                     <span className="text-gray-300">: </span>
                     {renderValue(val[k], `${path}.${k}`, depth + 1)}
-                    {i < keys.length - 1 && ','}
+                    {i < keys.length - 1 && <span className="text-gray-500">,</span>}
                   </div>
                 ))}
               </div>
             )}
-          {'}'}
-        </span>
+          <span className="text-gray-300">{'}'}</span>
+        </div>
       )
     }
 
@@ -148,9 +151,9 @@ function JsonViewer({ data }) {
   }
 
   return (
-    <pre className="font-mono text-sm leading-relaxed overflow-auto">
+    <div className="font-mono text-sm leading-relaxed overflow-auto">
       {renderValue(parsed, 'root')}
-    </pre>
+    </div>
   )
 }
 
@@ -350,11 +353,11 @@ export default function App() {
 
   const [method, setMethod] = useState('GET')
   const [url, setUrl] = useState('https://jsonplaceholder.typicode.com/todos/1')
-  const [headers, setHeaders] = useState([{ key: '', value: '', enabled: true }])
-  const [params, setParams] = useState([{ key: '', value: '', enabled: true }])
+  const [headers, setHeaders] = useState([newRow()])
+  const [params, setParams] = useState([newRow()])
   const [bodyType, setBodyType] = useState('none')
   const [bodyRaw, setBodyRaw] = useState('')
-  const [formData, setFormData] = useState([{ key: '', value: '', enabled: true }])
+  const [formData, setFormData] = useState([newRow()])
 
   const [loading, setLoading] = useState(false)
   const [response, setResponse] = useState(null)
@@ -512,11 +515,11 @@ export default function App() {
     const parsed = parseCurl(curlInput)
     setMethod(parsed.method)
     setUrl(parsed.url)
-    setHeaders(parsed.headers.length ? parsed.headers : [{ key: '', value: '', enabled: true }])
-    setParams(parsed.params.length ? parsed.params : [{ key: '', value: '', enabled: true }])
+    setHeaders(parsed.headers.length ? parsed.headers.map(h => newRow(h)) : [newRow()])
+    setParams(parsed.params.length ? parsed.params.map(p => newRow(p)) : [newRow()])
     setBodyType(parsed.bodyType)
     setBodyRaw(parsed.bodyRaw)
-    setFormData(parsed.formData.length ? parsed.formData : [{ key: '', value: '', enabled: true }])
+    setFormData(parsed.formData.length ? parsed.formData.map(f => newRow(f)) : [newRow()])
     setCurlInput('')
     setActiveTab('request')
   }
