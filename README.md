@@ -27,7 +27,7 @@ A secure, lightweight, mobile-friendly HTTP client — like Postman but runs in 
 - Input validation & sanitization on all proxy requests
 - Request timeout protection (30s default)
 - No request history stored by default
-- Secrets never logged
+- Request and response bodies are never logged (hostname and status code may be logged for debugging)
 - Environment variables for all sensitive config
 - Hop-by-hop header stripping
 - Header injection prevention

@@ -11,6 +11,14 @@ const METHOD_COLORS = {
 
 const BODY_TYPES = ['none', 'json', 'form-data', 'x-www-form-urlencoded']
 
+// Flags that consume the next token as a value
+const FLAGS_WITH_VALUE = new Set([
+  '-X', '--request', '-H', '--header', '-d', '--data', '--data-raw',
+  '--data-binary', '--data-urlencode', '-u', '--user', '-A', '--user-agent',
+  '-e', '--referer', '-o', '--output', '--connect-timeout', '--max-time',
+  '--cert', '--key', '--cacert', '--proxy', '-F', '--form',
+])
+
 function KeyValueEditor({ items, onChange, placeholder = 'Key' }) {
   const addRow = () => onChange([...items, { key: '', value: '', enabled: true }])
   const removeRow = (i) => onChange(items.filter((_, idx) => idx !== i))
@@ -146,6 +154,15 @@ function JsonViewer({ data }) {
   )
 }
 
+// Strip surrounding quotes from a shell token
+function stripQuotes(token) {
+  if ((token.startsWith("'") && token.endsWith("'")) ||
+      (token.startsWith('"') && token.endsWith('"'))) {
+    return token.slice(1, -1)
+  }
+  return token
+}
+
 function parseCurl(curlStr) {
   const result = {
     method: 'GET',
@@ -158,59 +175,126 @@ function parseCurl(curlStr) {
   }
 
   try {
+    // Normalise line continuations and collapse whitespace
     const str = curlStr.trim().replace(/\\\n/g, ' ').replace(/\s+/g, ' ')
 
-    const urlMatch = str.match(/curl\s+(?:'([^']+)'|"([^"]+)"|(\S+))/)
-    if (urlMatch) {
-      result.url = urlMatch[1] || urlMatch[2] || urlMatch[3]
-    }
+    // Tokenise respecting single/double-quoted strings
+    const tokens = []
+    const tokenRe = /'[^']*'|"(?:[^"\\]|\\.)*"|\S+/g
+    let m
+    while ((m = tokenRe.exec(str)) !== null) tokens.push(m[0])
 
-    const methodMatch = str.match(/-X\s+(\w+)/)
-    if (methodMatch) result.method = methodMatch[1].toUpperCase()
+    // First token should be 'curl' – skip it
+    let i = 1
 
-    const headerRegex = /-H\s+(?:'([^']+)'|"([^"]+)")/g
-    let hMatch
-    while ((hMatch = headerRegex.exec(str)) !== null) {
-      const headerStr = hMatch[1] || hMatch[2]
-      const colonIdx = headerStr.indexOf(':')
-      if (colonIdx > -1) {
-        result.headers.push({
-          key: headerStr.slice(0, colonIdx).trim(),
-          value: headerStr.slice(colonIdx + 1).trim(),
-          enabled: true,
-        })
-      }
-    }
+    while (i < tokens.length) {
+      const token = tokens[i]
 
-    const dataMatch = str.match(/(?:--data-raw|--data|-d)\s+(?:'([^']*)'|"([^"]*)")/)
-    if (dataMatch) {
-      const body = dataMatch[1] || dataMatch[2]
-      if (!result.method || result.method === 'GET') result.method = 'POST'
-      try {
-        JSON.parse(body)
-        result.bodyType = 'json'
-        result.bodyRaw = body
-      } catch {
-        if (body.includes('=')) {
-          result.bodyType = 'x-www-form-urlencoded'
+      // --- flags that take the next token as a value ---
+      if (FLAGS_WITH_VALUE.has(token)) {
+        const val = tokens[i + 1] ? stripQuotes(tokens[i + 1]) : ''
+
+        if (token === '-X' || token === '--request') {
+          result.method = val.toUpperCase()
+        } else if (token === '-H' || token === '--header') {
+          const colonIdx = val.indexOf(':')
+          if (colonIdx > -1) {
+            result.headers.push({
+              key: val.slice(0, colonIdx).trim(),
+              value: val.slice(colonIdx + 1).trim(),
+              enabled: true,
+            })
+          }
+        } else if (['-d', '--data', '--data-raw', '--data-binary'].includes(token)) {
+          const body = val
+          if (result.method === 'GET') result.method = 'POST'
+          try {
+            JSON.parse(body)
+            result.bodyType = 'json'
+          } catch {
+            result.bodyType = body.includes('=') ? 'x-www-form-urlencoded' : 'json'
+          }
           result.bodyRaw = body
-        } else {
-          result.bodyType = 'json'
-          result.bodyRaw = body
+        } else if (token === '-F' || token === '--form') {
+          const eqIdx = val.indexOf('=')
+          if (eqIdx > -1) {
+            result.formData.push({
+              key: val.slice(0, eqIdx),
+              value: val.slice(eqIdx + 1),
+              enabled: true,
+            })
+            result.bodyType = 'form-data'
+          }
         }
+
+        i += 2
+        continue
       }
+
+      // --- combined short flags like -XPOST or -H"header" ---
+      if (token.startsWith('-') && token.length > 2 && !token.startsWith('--')) {
+        const flag = token.slice(0, 2)
+        const val = stripQuotes(token.slice(2))
+
+        if (flag === '-X') {
+          result.method = val.toUpperCase()
+        } else if (flag === '-H') {
+          const colonIdx = val.indexOf(':')
+          if (colonIdx > -1) {
+            result.headers.push({
+              key: val.slice(0, colonIdx).trim(),
+              value: val.slice(colonIdx + 1).trim(),
+              enabled: true,
+            })
+          }
+        } else if (flag === '-d') {
+          if (result.method === 'GET') result.method = 'POST'
+          try {
+            JSON.parse(val)
+            result.bodyType = 'json'
+          } catch {
+            result.bodyType = val.includes('=') ? 'x-www-form-urlencoded' : 'json'
+          }
+          result.bodyRaw = val
+        }
+
+        i++
+        continue
+      }
+
+      // --- boolean flags (no value) ---
+      if (token.startsWith('-')) {
+        i++
+        continue
+      }
+
+      // --- positional argument: must be the URL ---
+      const candidate = stripQuotes(token)
+      if (candidate.startsWith('http://') || candidate.startsWith('https://')) {
+        result.url = candidate
+      }
+
+      i++
     }
 
-    try {
-      const urlObj = new URL(result.url)
-      urlObj.searchParams.forEach((v, k) => {
-        result.params.push({ key: k, value: v, enabled: true })
-      })
-      result.url = urlObj.origin + urlObj.pathname
-    } catch { /* ignore */ }
+    // Extract query params from URL into the params array
+    if (result.url) {
+      try {
+        const urlObj = new URL(result.url)
+        urlObj.searchParams.forEach((v, k) => {
+          result.params.push({ key: k, value: v, enabled: true })
+        })
+        result.url = urlObj.origin + urlObj.pathname
+      } catch { /* ignore */ }
+    }
   } catch { /* ignore */ }
 
   return result
+}
+
+// POSIX single-quote safe escape: replace ' with '\''
+function shellEscape(str) {
+  return String(str).replace(/'/g, "'\\''")
 }
 
 function generateCurl({ method, url, headers, params, bodyType, bodyRaw, formData }) {
@@ -227,23 +311,23 @@ function generateCurl({ method, url, headers, params, bodyType, bodyRaw, formDat
     }
   }
 
-  let cmd = `curl -X ${method} '${fullUrl}'`
+  let cmd = `curl -X ${method} '${shellEscape(fullUrl)}'`
 
   const enabledHeaders = headers.filter(h => h.enabled && h.key)
   enabledHeaders.forEach(h => {
-    cmd += ` \\\n  -H '${h.key}: ${h.value}'`
+    cmd += ` \\\n  -H '${shellEscape(h.key)}: ${shellEscape(h.value)}'`
   })
 
   if (bodyType === 'json' && bodyRaw) {
     cmd += ` \\\n  -H 'Content-Type: application/json'`
-    cmd += ` \\\n  --data-raw '${bodyRaw}'`
+    cmd += ` \\\n  --data-raw '${shellEscape(bodyRaw)}'`
   } else if (bodyType === 'x-www-form-urlencoded' && bodyRaw) {
     cmd += ` \\\n  -H 'Content-Type: application/x-www-form-urlencoded'`
-    cmd += ` \\\n  --data '${bodyRaw}'`
+    cmd += ` \\\n  --data '${shellEscape(bodyRaw)}'`
   } else if (bodyType === 'form-data') {
     const enabledForm = formData.filter(f => f.enabled && f.key)
     enabledForm.forEach(f => {
-      cmd += ` \\\n  -F '${f.key}=${f.value}'`
+      cmd += ` \\\n  -F '${shellEscape(f.key)}=${shellEscape(f.value)}'`
     })
   }
 
@@ -330,10 +414,33 @@ export default function App() {
       if (useProxy) {
         const proxyBase = import.meta.env.VITE_PROXY_URL || 'http://localhost:3001'
         fetchUrl = `${proxyBase}/proxy`
+
+        // Send form-data fields as structured payload so the backend can
+        // construct the correct multipart request upstream
+        let proxyPayload
+        if (bodyType === 'form-data') {
+          proxyPayload = {
+            method,
+            url: fullUrl,
+            headers: reqHeaders,
+            bodyType: 'form-data',
+            formData: formData
+              .filter(f => f.enabled && f.key)
+              .map(f => ({ key: f.key, value: f.value })),
+          }
+        } else {
+          proxyPayload = {
+            method,
+            url: fullUrl,
+            headers: reqHeaders,
+            body: bodyRaw || undefined,
+          }
+        }
+
         fetchOpts = {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ method, url: fullUrl, headers: reqHeaders, body: bodyRaw || undefined }),
+          body: JSON.stringify(proxyPayload),
         }
       }
 
@@ -351,14 +458,34 @@ export default function App() {
         const contentType = res.headers.get('content-type') || ''
         const rawText = await res.text()
 
+        // If response came from proxy it is JSON-wrapped
+        let displayBody = rawText
+        let displayHeaders = resHeaders
+        let displayStatus = res.status
+        let displayStatusText = res.statusText
+        let displayTime = elapsed
+
+        if (useProxy) {
+          try {
+            const proxyJson = JSON.parse(rawText)
+            if (proxyJson.status) {
+              displayStatus = proxyJson.status
+              displayStatusText = proxyJson.statusText || ''
+              displayHeaders = proxyJson.headers || {}
+              displayBody = proxyJson.body || ''
+              displayTime = proxyJson.time ?? elapsed
+            }
+          } catch { /* use raw */ }
+        }
+
         setResponse({
-          status: res.status,
-          statusText: res.statusText,
-          headers: resHeaders,
-          body: rawText,
-          isJson: contentType.includes('application/json') || (() => { try { JSON.parse(rawText); return true } catch { return false } })(),
-          time: elapsed,
-          size: new Blob([rawText]).size,
+          status: displayStatus,
+          statusText: displayStatusText,
+          headers: displayHeaders,
+          body: displayBody,
+          isJson: contentType.includes('application/json') || (() => { try { JSON.parse(displayBody); return true } catch { return false } })(),
+          time: displayTime,
+          size: new Blob([displayBody]).size,
         })
         setActiveTab('response')
       } catch (err) {
@@ -395,10 +522,15 @@ export default function App() {
   }
 
   const copyText = (text, key) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(key)
-      setTimeout(() => setCopied(''), 2000)
-    })
+    navigator.clipboard.writeText(text)
+      .then(() => {
+        setCopied(key)
+        setTimeout(() => setCopied(''), 2000)
+      })
+      .catch((err) => {
+        console.error('Failed to copy text to clipboard:', err)
+        window.alert('Failed to copy to clipboard. Please copy the text manually.')
+      })
   }
 
   const bg = dark ? 'bg-gray-950 text-gray-100' : 'bg-gray-50 text-gray-900'
@@ -420,14 +552,18 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 cursor-pointer text-sm">
+          <label className="flex items-center gap-2 cursor-pointer text-sm select-none">
             <span className={dark ? 'text-gray-400' : 'text-gray-500'}>Proxy</span>
-            <div
+            <button
+              type="button"
               onClick={() => setUseProxy(v => !v)}
-              className={`relative w-10 h-5 rounded-full transition-colors ${useProxy ? 'bg-blue-500' : dark ? 'bg-gray-700' : 'bg-gray-300'}`}
+              role="switch"
+              aria-checked={useProxy}
+              aria-label="Toggle proxy mode"
+              className={`relative w-10 h-5 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 ${useProxy ? 'bg-blue-500' : dark ? 'bg-gray-700' : 'bg-gray-300'}`}
             >
               <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${useProxy ? 'translate-x-5' : ''}`} />
-            </div>
+            </button>
           </label>
           <button
             onClick={() => setDark(d => !d)}
