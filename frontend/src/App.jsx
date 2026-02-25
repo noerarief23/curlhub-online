@@ -373,6 +373,13 @@ export default function App() {
 
   const handleSend = async () => {
     if (!url.trim()) { setError('Please enter a URL'); return }
+
+    const trimmedUrl = url.trim()
+    if (window.location.protocol === 'https:' && trimmedUrl.startsWith('http://') && !useProxy) {
+      setError('Mixed Content: This page is served over HTTPS but the target URL uses HTTP. Enable the proxy to send this request.')
+      return
+    }
+
     setLoading(true)
     setError(null)
     setResponse(null)
@@ -416,6 +423,9 @@ export default function App() {
 
       if (useProxy) {
         const proxyBase = import.meta.env.VITE_PROXY_URL || 'http://localhost:3001'
+        if (window.location.protocol === 'https:' && proxyBase.startsWith('http://')) {
+          throw new Error('Proxy URL uses HTTP but the page is served over HTTPS. Configure VITE_PROXY_URL with an HTTPS address.')
+        }
         fetchUrl = `${proxyBase}/proxy`
 
         // Send form-data fields as structured payload so the backend can
